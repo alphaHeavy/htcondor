@@ -1,6 +1,8 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Submit
   ( submit
@@ -30,13 +32,15 @@ module Submit
 
     -- * Other crap
   , logParser
-  , testString
   ) where
 
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.State.Lazy
+import Data.Conduit
+import qualified Data.Conduit.Binary as Cb
+import qualified Data.Conduit.Text as Ct
 import Data.Foldable
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -44,7 +48,7 @@ import Data.Monoid
 import Data.Text (Text)
 import qualified Data.Text as Text
 import System.Process (readProcess)
-import Text.Parsec hiding ((<|>))
+import Text.Parsec as Parsec hiding ((<|>))
 import Text.Parsec.Text ()
 
 newtype CondorT m a = CondorT {runCondor :: StateT [Map Text [Text]] m a}
@@ -97,19 +101,7 @@ data EventType
   | JobReleased
     deriving Show
 
-testString :: Text
-testString = Text.unlines
-  [ "000 (018.000.000) 07/17 09:15:52 Job submitted from host: <10.0.1.2:49039>"
-  , "..."
-  , "001 (018.000.000) 07/17 09:16:02 Job executing on host: <10.0.2.4:37941>"
-  , "..."
-  , "006 (018.000.000) 07/17 09:16:03 Image size of job updated: 75000"
-  , "\t\t0  -  MemoryUsage of job (MB)"
-  , "\t\t0  -  ResidentSetSize of job (KB)"
-  , "..."
-  ]
-
-eventType :: Parsec Text u EventType
+eventType :: Monad m => ParsecT Text u m EventType
 eventType =
       try (string "000" *> pure JobSubmitted)
   <|> try (string "001" *> pure JobExecuting)
@@ -124,16 +116,49 @@ eventType =
   <|> try (string "012" *> pure JobHeld)
   <|> try (string "013" *> pure JobReleased)
 
-logParser' :: Parsec Text () LogEvent
-logParser' = spaces *> logParser <* spaces
+parseReads :: (Read a, Stream s m t) => String -> ParsecT s u m a
+parseReads s
+  | [(val, "")] <- reads s = pure val
+  | otherwise              = unexpected "no parse"
 
-logParser :: Parsec Text () LogEvent
+threeDigits :: Monad m => ParsecT Text () m Int
+threeDigits = Parsec.count 3 digit >>= parseReads
+
+logParserLine :: Monad m => ParsecT Text () m LogEvent
+logParserLine = spaces *> logParser <* spaces
+
+logParser :: Monad m => ParsecT Text () m LogEvent
 logParser = LogEvent
   <$> eventType
-  <*> pure 0
-  <*> pure 0
-  <*> pure 0
-  <*> (Text.pack <$> Text.Parsec.many anyChar)
+  <*> (space *> char '(' *> threeDigits)
+  <*> (char '.' *> threeDigits)
+  <*> (char '.' *> threeDigits <* char ')' <* space)
+  <*> (Text.pack <$> Parsec.many anyChar)
+
+fileSplitter :: MonadResource m => GSource m [Text]
+fileSplitter = Cb.sourceFile "/tmp/revolver.log" >+> Cb.lines >+> Ct.decode Ct.utf8 >+> splat [] where
+  splat xs = do
+    mval <- await
+    case mval of
+      Just "..." -> unless (null xs) (yield (reverse xs)) >> splat []
+      Just val   -> splat (val:xs)
+      Nothing
+        | null xs   -> return ()
+        | otherwise -> yield (reverse xs)
+
+logPipe :: Monad m => SourcePos -> GInfConduit [Text] m LogEvent
+logPipe !pos = do
+  mval <- awaitE
+  case mval of
+    Right val ->
+      case runParser (setPosition pos >> logParserLine) () "" (Text.unlines val) of
+        Right val' -> do
+          yield val'
+          -- 1 extra for the "..."
+          let pos' = incSourceLine pos (1+length val)
+          logPipe pos'
+        Left  err  -> fail $ show err
+    Left val -> return val
 
 submit :: Condor () -> IO ()
 submit c = do
@@ -190,7 +215,7 @@ queue_ :: Monad m => CondorT m ()
 queue_ = modify (Map.empty:)
 
 queue :: Monad m => Int -> CondorT m ()
-queue x = modify ((replicate x Map.empty)++)
+queue x = modify (replicate x Map.empty ++)
 
 universe :: Monad m => CondorUniverse -> CondorT m ()
 universe n = modifyHead (Map.insert "universe" [format n]) where
