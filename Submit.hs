@@ -5,7 +5,11 @@
 {-# LANGUAGE RankNTypes #-}
 
 module Submit
-  ( submit
+  ( LogEvent(..)
+  , EventType(..)
+  , submit
+  , submit_
+  , wait
     -- * Basic Commands
   , arguments
   , environment
@@ -35,9 +39,12 @@ module Submit
   ) where
 
 import Control.Applicative
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.State.Lazy
+import Control.Monad.Trans.Resource
+import Data.ByteString (ByteString)
 import Data.Conduit
 import qualified Data.Conduit.Binary as Cb
 import qualified Data.Conduit.Text as Ct
@@ -47,8 +54,11 @@ import qualified Data.Map as Map
 import Data.Monoid
 import Data.Text (Text)
 import qualified Data.Text as Text
+import System.Directory (getTemporaryDirectory, removeFile)
+import System.IO (Handle, hClose, openBinaryTempFile)
 import System.Process (readProcess)
 import Text.Parsec as Parsec hiding ((<|>))
+import Text.Parsec.Pos (initialPos)
 import Text.Parsec.Text ()
 
 newtype CondorT m a = CondorT {runCondor :: StateT [Map Text [Text]] m a}
@@ -82,9 +92,13 @@ type ClusterId = Int
 type ProcId = Int
 type NodeNumber = Int
 
-data LogEvent
-  = LogEvent EventType ClusterId ProcId NodeNumber Text
-    deriving Show
+data LogEvent = LogEvent
+  { logEventType       :: EventType
+  , logEventClusterId  :: ClusterId
+  , logEventProcId     :: ProcId
+  , logEventNodeNumber :: NodeNumber
+  , logEventText       :: Text
+  } deriving Show
 
 data EventType
   = JobSubmitted
@@ -135,16 +149,24 @@ logParser = LogEvent
   <*> (char '.' *> threeDigits <* char ')' <* space)
   <*> (Text.pack <$> Parsec.many anyChar)
 
-fileSplitter :: MonadResource m => GSource m [Text]
-fileSplitter = Cb.sourceFile "/tmp/revolver.log" >+> Cb.lines >+> Ct.decode Ct.utf8 >+> splat [] where
-  splat xs = do
-    mval <- await
+-- |
+-- Break up the condor_submit logfile by splitting on "..." lines
+logChunkSplitter :: MonadThrow m => GInfConduit ByteString m [Text]
+logChunkSplitter = Cb.lines >+> Ct.decode Ct.utf8 >+> step [] where
+  revyield xs = unless (null xs) $ yield (reverse xs)
+  step xs = do
+    mval <- awaitE
     case mval of
-      Just "..." -> unless (null xs) (yield (reverse xs)) >> splat []
-      Just val   -> splat (val:xs)
-      Nothing
-        | null xs   -> return ()
-        | otherwise -> yield (reverse xs)
+      Right val
+        | Text.strip val == "..." -> do
+            revyield xs
+            step []
+
+        | otherwise -> step (val:xs)
+
+      Left val -> do
+        revyield xs
+        return val
 
 logPipe :: Monad m => SourcePos -> GInfConduit [Text] m LogEvent
 logPipe !pos = do
@@ -160,15 +182,44 @@ logPipe !pos = do
         Left  err  -> fail $ show err
     Left val -> return val
 
-submit :: Condor () -> IO ()
+binaryTempFile :: MonadResource m => String -> m (ReleaseKey, FilePath, Handle)
+binaryTempFile template = do
+  let cleanupTempFile (f, h) = do
+        hClose h
+        removeFile f
+  tmpdir <- liftIO getTemporaryDirectory
+  (releaseKey, (logFile, logHandle)) <- allocate (openBinaryTempFile tmpdir template) cleanupTempFile
+  return $! (releaseKey, logFile, logHandle)
+
+submit :: MonadResource m => Condor () -> GSource m LogEvent
 submit c = do
-  let script = pretty (Submit.log "/tmp/foo.log" >> c)
-  putStrLn . Text.unpack $ script
-  res1 <- readProcess "condor_submit" ["-verbose"] (Text.unpack script)
-  print res1
-  res2 <- readProcess "condor_wait" ["/tmp/foo.log"] ""
-  print res2
+  (logKey, logFile, logHandle) <- binaryTempFile "hs-htcondor.log"
+  let script = pretty (Submit.log logFile >> c)
+  liftIO $ putStrLn . Text.unpack $ script
+  res1 <- liftIO $ readProcess "condor_submit" ["-verbose"] (Text.unpack script)
+  liftIO $ print res1
+  let source = forever (Cb.sourceHandle logHandle >> liftIO (threadDelay 100000))
+  source >+> logChunkSplitter >+> logPipe (initialPos logFile)
+
+submit_ :: Condor () -> IO ()
+submit_ c = do
+  _ <- forkIO . runResourceT $ submit c $$ wait
   return ()
+
+wait :: Monad m => GSink LogEvent m ()
+wait = step False 0 where
+  step True 0 = return ()
+  step seen i = do
+    mval <- await
+    case mval of
+      Nothing -> return ()
+      Just val -> do
+        case logEventType val of
+          JobSubmitted      -> step True (i+1)
+          JobTerminated     -> step seen (i-1)
+          JobAborted        -> step seen (i-1)
+          ErrorInExecutable -> step seen (i-1)
+          _                 -> step seen i
 
 arguments :: Monad m => [Text] -> CondorT m ()
 arguments = modifyHead . Map.insert "arguments"
