@@ -8,13 +8,15 @@ module Submit
   ( LogEvent(..)
   , EventType(..)
   , submit
-  , submit_
+  , submitAndWait
   , wait
+
     -- * Basic Commands
+  , executable
+  , executable_
   , arguments
   , environment
   , Submit.error
-  , executable
   , getenv
   , input
   -- , Submit.log
@@ -34,8 +36,22 @@ module Submit
   , requestMemory
   , requirements
 
-    -- * Other crap
-  , logParser
+    -- * File Transfer Commands
+  , dontEncryptInputFiles
+  , dontEncryptOutputFiles
+  , encryptInputFiles
+  , encryptOutputFiles
+  , outputDestination
+  , shouldTransferFiles
+  , skipFilechecks
+  , streamError
+  , streamInput
+  , streamOutput
+  , transferExecutable
+  , transferInputFiles
+  , transferOutputFiles
+  , transferOutputRemaps
+  , whenToTransferOutput
   ) where
 
 import Control.Applicative
@@ -84,9 +100,7 @@ data CondorUniverse
 modifyHead :: MonadState [t] m => (t -> t) -> m ()
 modifyHead f = modify (\ (x:xs) -> f x:xs)
 
--- Submitting job(s).
--- 1 job(s) submitted to cluster 480.
--- blah :: Parsec 
+insertBool key f = modifyHead (Map.insert "key" [if f then "True" else "False"])
 
 type ClusterId = Int
 type ProcId = Int
@@ -133,7 +147,7 @@ eventType =
 parseReads :: (Read a, Stream s m t) => String -> ParsecT s u m a
 parseReads s
   | [(val, "")] <- reads s = pure val
-  | otherwise              = unexpected "no parse"
+  | otherwise = unexpected "no parse"
 
 threeDigits :: Monad m => ParsecT Text () m Int
 threeDigits = Parsec.count 3 digit >>= parseReads
@@ -201,11 +215,12 @@ submit c = do
   let source = forever (Cb.sourceHandle logHandle >> liftIO (threadDelay 100000))
   source >+> logChunkSplitter >+> logPipe (initialPos logFile)
 
-submit_ :: Condor () -> IO ()
-submit_ c = do
-  _ <- forkIO . runResourceT $ submit c $$ wait
-  return ()
+submitAndWait :: Condor () -> IO ()
+submitAndWait c =
+  runResourceT $ submit c $$ wait
 
+-- |
+-- Wait for all submitted jobs to complete
 wait :: Monad m => GSink LogEvent m ()
 wait = step False 0 where
   step True 0 = return ()
@@ -231,11 +246,16 @@ environment = modifyHead . Map.insert "environment" . fmap x . Map.toList where
 error :: Monad m => FilePath -> CondorT m ()
 error errorPath = modifyHead (Map.insert "error" [Text.pack errorPath])
 
-executable :: Monad m => FilePath -> CondorT m ()
-executable executablePath = modifyHead (Map.insert "executable" [Text.pack executablePath])
+executable :: Monad m => FilePath -> [Text] -> CondorT m ()
+executable executablePath args = do
+  executable_ executablePath
+  arguments args
+
+executable_ :: Monad m => FilePath -> CondorT m ()
+executable_ executablePath = modifyHead (Map.insert "executable" [Text.pack executablePath])
 
 getenv :: Monad m => Bool -> CondorT m ()
-getenv f = modifyHead (Map.insert "getenv" [if f then "True" else "False"])
+getenv = insertBool "getenv"
 
 input :: Monad m => FilePath -> CondorT m ()
 input inputPath = modifyHead (Map.insert "input" [Text.pack inputPath])
@@ -244,7 +264,7 @@ log :: Monad m => FilePath -> CondorT m ()
 log logPath = modifyHead (Map.insert "log" [Text.pack logPath])
 
 logXml :: Monad m => Bool -> CondorT m ()
-logXml f = modifyHead (Map.insert "log_xml" [if f then "True" else "False"])
+logXml = insertBool "log_xml"
 
 notification :: Monad m => CondorNotification -> CondorT m ()
 notification n = modifyHead (Map.insert "notification" [format n]) where
@@ -295,12 +315,55 @@ requirements  :: Monad m => Text -> CondorT m ()
 requirements str = modifyHead (Map.insert "requirements" [str])
 
 
-test :: Condor ()
-test = do
-  arguments ["test", "ok"]
-  queue_
-  executable "/tmp/foo"
-  queue_
+dontEncryptInputFiles :: Monad m => [FilePath] -> CondorT m ()
+dontEncryptInputFiles = modifyHead . Map.insert "dont_encrypt_input_files" . fmap Text.pack
+
+dontEncryptOutputFiles :: Monad m => [FilePath] -> CondorT m ()
+dontEncryptOutputFiles = modifyHead . Map.insert "dont_encrypt_output_files" . fmap Text.pack
+
+encryptInputFiles :: Monad m => [FilePath] -> CondorT m ()
+encryptInputFiles = modifyHead . Map.insert "encrypt_input_files" . fmap Text.pack
+
+encryptOutputFiles :: Monad m => [FilePath] -> CondorT m ()
+encryptOutputFiles = modifyHead . Map.insert "encrypt_output_files" . fmap Text.pack
+
+outputDestination :: Monad m => Text -> CondorT m ()
+outputDestination str = modifyHead (Map.insert "output_destination" [str])
+
+shouldTransferFiles :: Monad m => Maybe Bool -> CondorT m ()
+shouldTransferFiles n = modifyHead (Map.insert "should_transfer_files" [format n]) where
+  format Nothing      = "IF_NEEDED"
+  format (Just True)  = "YES"
+  format (Just False) = "NO"
+
+skipFilechecks :: Monad m => Bool -> CondorT m ()
+skipFilechecks = insertBool "skip_filechecks"
+
+streamError :: Monad m => Bool -> CondorT m ()
+streamError = insertBool "stream_error"
+
+streamInput :: Monad m => Bool -> CondorT m ()
+streamInput = insertBool "stream_input"
+
+streamOutput :: Monad m => Bool -> CondorT m ()
+streamOutput = insertBool "stream_output"
+
+transferExecutable :: Monad m => Bool -> CondorT m ()
+transferExecutable = insertBool "transfer_executable"
+
+transferInputFiles :: Monad m => [FilePath] -> CondorT m ()
+transferInputFiles = modifyHead . Map.insert "transfer_input_files" . fmap Text.pack
+
+transferOutputFiles :: Monad m => [FilePath] -> CondorT m ()
+transferOutputFiles = modifyHead . Map.insert "transfer_output_files" . fmap Text.pack
+
+transferOutputRemaps :: Monad m => Map FilePath FilePath -> CondorT m ()
+transferOutputRemaps m = modifyHead (Map.insert "transfer_output_remaps" [format m]) where
+  format = Text.intercalate ";" . fmap (\ (k, v) -> Text.pack k <> " = " <> Text.pack v) . Map.toList
+
+whenToTransferOutput :: Monad m => [FilePath] -> CondorT m ()
+whenToTransferOutput = modifyHead . Map.insert "when_to_transfer_output" . fmap Text.pack
+
 
 pretty :: Condor () -> Text
 pretty (CondorT st) =
