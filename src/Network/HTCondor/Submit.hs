@@ -221,7 +221,7 @@ submit c = do
   _ <- liftIO . readProcess "condor_submit" [] $ Text.unpack script
 
   -- rely on the sink to exit
-  forever (Cb.sourceHandle logHandle >> liftIO (threadDelay 100000))
+  _ <- forever (Cb.sourceHandle logHandle >> liftIO (threadDelay 1000000))
     >+> logChunkSplitter
     >+> logPipe (initialPos logFile)
 
