@@ -64,6 +64,7 @@ import Control.Monad.Trans.Resource
 import Data.ByteString (ByteString)
 import Data.Conduit
 import qualified Data.Conduit.Binary as Cb
+import qualified Data.Conduit.List as Cl
 import qualified Data.Conduit.Text as Ct
 import Data.Foldable
 import Data.Map (Map)
@@ -229,19 +230,20 @@ submit c = do
 
 submitAndWait :: Condor () -> IO ()
 submitAndWait c =
-  runResourceT $ submit c $$ wait
+  runResourceT $ submit c $$ wait >+> Cl.sinkNull
 
 -- |
 -- Wait for all submitted jobs to complete
-wait :: forall m . Monad m => GSink LogEvent m ()
+wait :: forall m . Monad m => GConduit LogEvent m LogEvent
 wait = step False 0 where
-  step :: Bool -> Int -> GSink LogEvent m ()
+  step :: Bool -> Int -> GConduit LogEvent m LogEvent
   step True 0 = return ()
   step seen i = do
     mval <- await
     case mval of
       Nothing -> return ()
-      Just val ->
+      Just val -> do
+        yield val
         case logEventType val of
           JobSubmitted      -> step True (i+1)
           JobTerminated     -> step seen (i-1)
