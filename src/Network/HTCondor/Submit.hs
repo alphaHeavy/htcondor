@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module Submit
+module Network.HTCondor.Submit
   ( LogEvent(..)
   , EventType(..)
   , submit
@@ -16,7 +16,7 @@ module Submit
   , executable_
   , arguments
   , environment
-  , Submit.error
+  , Network.HTCondor.Submit.error
   , getenv
   , input
   -- , Submit.log
@@ -212,7 +212,7 @@ binaryTempFile template = do
 submit :: MonadResource m => Condor () -> GSource m LogEvent
 submit c = do
   (logKey, logFile, logHandle) <- binaryTempFile "hs-htcondor.log"
-  let script = pretty (Submit.log logFile >> c)
+  let script = pretty (Network.HTCondor.Submit.log logFile >> c)
   -- liftIO $ putStrLn . Text.unpack $ script
   -- res1 <- liftIO $ readProcess "condor_submit" ["-verbose"] (Text.unpack script)
   -- liftIO $ print res1
