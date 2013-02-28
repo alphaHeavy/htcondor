@@ -18,7 +18,9 @@ library
     src
   exposed-modules:
     Network.HTCondor.Submit
-    Network.HTCondor.SubmitLogParser
+    Network.HTCondor.Submit.Language
+    Network.HTCondor.Submit.LogParser
+    Network.HTCondor.Submit.Types
   build-depends:
     base              >= 3      && < 5,
     bytestring        >= 0.9.1,
