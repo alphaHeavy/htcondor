@@ -226,7 +226,7 @@ submit c = do
     >+> logChunkSplitter
     >+> logPipe (initialPos logFile)
 
-  lift $ release logKey
+  release logKey
 
 submitAndWait :: Condor () -> IO ()
 submitAndWait c =
@@ -298,7 +298,7 @@ priority :: Monad m => Int -> CondorT m ()
 priority priorityLevel = modifyHead (Map.insert "priority" [Text.pack $ show priorityLevel])
 
 queue_ :: Monad m => CondorT m ()
-queue_ = modify (Map.empty:)
+queue_ = queue 1
 
 queue :: Monad m => Int -> CondorT m ()
 queue x = modify (replicate x Map.empty ++)
