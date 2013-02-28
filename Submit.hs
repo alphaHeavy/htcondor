@@ -202,18 +202,28 @@ binaryTempFile template = do
         hClose h
         removeFile f
   tmpdir <- liftIO getTemporaryDirectory
-  (releaseKey, (logFile, logHandle)) <- allocate (openBinaryTempFile tmpdir template) cleanupTempFile
+
+  (releaseKey, (logFile, logHandle)) <- allocate
+    (openBinaryTempFile tmpdir template)
+    cleanupTempFile
+
   return $! (releaseKey, logFile, logHandle)
 
 submit :: MonadResource m => Condor () -> GSource m LogEvent
 submit c = do
   (logKey, logFile, logHandle) <- binaryTempFile "hs-htcondor.log"
   let script = pretty (Submit.log logFile >> c)
-  liftIO $ putStrLn . Text.unpack $ script
-  res1 <- liftIO $ readProcess "condor_submit" ["-verbose"] (Text.unpack script)
-  liftIO $ print res1
-  let source = forever (Cb.sourceHandle logHandle >> liftIO (threadDelay 100000))
-  source >+> logChunkSplitter >+> logPipe (initialPos logFile)
+  -- liftIO $ putStrLn . Text.unpack $ script
+  -- res1 <- liftIO $ readProcess "condor_submit" ["-verbose"] (Text.unpack script)
+  -- liftIO $ print res1
+  _ <- liftIO . readProcess "condor_submit" [] $ Text.unpack script
+
+  -- rely on the sink to exit
+  forever (Cb.sourceHandle logHandle >> liftIO (threadDelay 100000))
+    >+> logChunkSplitter
+    >+> logPipe (initialPos logFile)
+
+  lift $ release logKey
 
 submitAndWait :: Condor () -> IO ()
 submitAndWait c =
