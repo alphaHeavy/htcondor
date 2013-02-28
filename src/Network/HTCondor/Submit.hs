@@ -209,7 +209,7 @@ binaryTempFile template = do
     (openBinaryTempFile tmpdir template)
     cleanupTempFile
 
-  return $! (releaseKey, logFile, logHandle)
+  return (releaseKey, logFile, logHandle)
 
 submit :: MonadResource m => Condor () -> GSource m LogEvent
 submit c = do
@@ -241,7 +241,7 @@ wait = step False 0 where
     mval <- await
     case mval of
       Nothing -> return ()
-      Just val -> do
+      Just val ->
         case logEventType val of
           JobSubmitted      -> step True (i+1)
           JobTerminated     -> step seen (i-1)
