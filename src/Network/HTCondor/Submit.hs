@@ -3,6 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Network.HTCondor.Submit
   ( LogEvent(..)
@@ -55,7 +56,7 @@ module Network.HTCondor.Submit
   ) where
 
 import Control.Applicative
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (threadDelay)
 import Control.Monad
 import Control.Monad.Identity
 import Control.Monad.State.Lazy
@@ -100,7 +101,8 @@ data CondorUniverse
 modifyHead :: MonadState [t] m => (t -> t) -> m ()
 modifyHead f = modify (\ (x:xs) -> f x:xs)
 
-insertBool key f = modifyHead (Map.insert "key" [if f then "True" else "False"])
+insertBool :: Monad m => Text -> Bool -> CondorT m ()
+insertBool key f = modifyHead (Map.insert key [if f then "True" else "False"])
 
 type ClusterId = Int
 type ProcId = Int
@@ -231,8 +233,9 @@ submitAndWait c =
 
 -- |
 -- Wait for all submitted jobs to complete
-wait :: Monad m => GSink LogEvent m ()
+wait :: forall m . Monad m => GSink LogEvent m ()
 wait = step False 0 where
+  step :: Bool -> Int -> GSink LogEvent m ()
   step True 0 = return ()
   step seen i = do
     mval <- await
@@ -273,8 +276,8 @@ input inputPath = modifyHead (Map.insert "input" [Text.pack inputPath])
 log :: Monad m => FilePath -> CondorT m ()
 log logPath = modifyHead (Map.insert "log" [Text.pack logPath])
 
-logXml :: Monad m => Bool -> CondorT m ()
-logXml = insertBool "log_xml"
+-- logXml :: Monad m => Bool -> CondorT m ()
+-- logXml = insertBool "log_xml"
 
 notification :: Monad m => CondorNotification -> CondorT m ()
 notification n = modifyHead (Map.insert "notification" [format n]) where
