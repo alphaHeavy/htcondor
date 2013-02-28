@@ -2,13 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module Network.HTCondor.SubmitLogParser
-  ( LogEvent(..)
-  , ClusterId
-  , ProcId
-  , NodeNumber
-  , EventType(..)
-  , submitLogPipe
+module Network.HTCondor.Submit.LogParser
+  ( submitLogPipe
   ) where
 
 import Control.Applicative
@@ -24,32 +19,7 @@ import Text.Parsec as Parsec hiding ((<|>))
 import Text.Parsec.Pos (initialPos)
 import Text.Parsec.Text ()
 
-type ClusterId = Int
-type ProcId = Int
-type NodeNumber = Int
-
-data LogEvent = LogEvent
-  { logEventType       :: EventType
-  , logEventClusterId  :: ClusterId
-  , logEventProcId     :: ProcId
-  , logEventNodeNumber :: NodeNumber
-  , logEventText       :: Text
-  } deriving Show
-
-data EventType
-  = JobSubmitted
-  | JobExecuting
-  | ErrorInExecutable
-  | JobCheckpointed
-  | JobEvicted
-  | JobTerminated
-  | ImageSizeUpdated
-  | ShadowException
-  | JobAborted
-  | JobSuspended
-  | JobHeld
-  | JobReleased
-    deriving Show
+import Network.HTCondor.Submit.Types
 
 eventType :: Monad m => ParsecT Text u m EventType
 eventType =
