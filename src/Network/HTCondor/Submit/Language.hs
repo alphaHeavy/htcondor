@@ -129,7 +129,7 @@ wait = step False 0 where
           _                 -> step seen i
 
 arguments :: Monad m => [Text] -> CondorT m ()
-arguments = modifyHead . Map.insert "arguments"
+arguments xs = modifyHead (Map.insert "arguments" [Text.intercalate " " xs])
 
 environment :: Monad m => Map Text Text -> CondorT m ()
 environment = modifyHead . Map.insert "environment" . fmap x . Map.toList where
